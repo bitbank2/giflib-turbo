@@ -21,9 +21,13 @@
 #include <string.h>
 // Use POSIX I/O for compatibility with Linux/MacOS/Windows
 #include <unistd.h>
+#include <stdarg.h>
+
 #include <sys/fcntl.h>
 
 #include "gif_lib.h"
+
+bool GifNoisyPrint = false;
 
 static const uint8_t cGIFPass[8] = {8,0,8,4,4,2,2,1}; // GIF interlaced y delta
 int EncodeLZW(SavedImage *pImage, uint32_t *pSymbols, uint8_t *pOutput, uint8_t ucCodeStart);
@@ -124,6 +128,20 @@ const char *GifErrorString(int ErrorCode)
     }
     return Err;
 }
+
+void GifQprintf(char *Format, ...) {
+    va_list ArgPtr;
+
+    va_start(ArgPtr, Format);
+
+    if (GifNoisyPrint) {
+        char Line[128];
+        (void)vsnprintf(Line, sizeof(Line), Format, ArgPtr);
+        (void)fputs(Line, stderr);
+    }
+
+    va_end(ArgPtr);
+} /* GifQprintf() */
 
 void PrintGifError(int ErrorCode) {
     const char *Err = GifErrorString(ErrorCode);
@@ -323,6 +341,107 @@ void GifFreeMapObject(ColorMapObject *Object)
         (void)free(Object);
     }
 } /* GifFreeMapObject() */
+//
+// GifUnionColorMap
+//
+/*******************************************************************************
+ Compute the union of two given color maps and return it.  If result can't
+ fit into 256 colors, NULL is returned, the allocated union otherwise.
+ ColorIn1 is copied as is to ColorUnion, while colors from ColorIn2 are
+ copied iff they didn't exist before.  ColorTransIn2 maps the old
+ ColorIn2 into the ColorUnion color map table./
+*******************************************************************************/
+ColorMapObject *GifUnionColorMap(const ColorMapObject *ColorIn1, const ColorMapObject *ColorIn2, GifPixelType ColorTransIn2[])
+{
+    int i, j, CrntSlot, RoundUpTo, NewGifBitSize;
+    ColorMapObject *ColorUnion;
+
+    /*
+     * We don't worry about duplicates within either color map; if
+     * the caller wants to resolve those, he can perform unions
+     * with an empty color map.
+     */
+
+    /* Allocate table which will hold the result for sure. */
+    ColorUnion = GifMakeMapObject(MAX(ColorIn1->ColorCount,
+                               ColorIn2->ColorCount) * 2, NULL);
+
+    if (ColorUnion == NULL)
+        return (NULL);
+
+    /*
+     * Copy ColorIn1 to ColorUnion.
+     */
+    for (i = 0; i < ColorIn1->ColorCount; i++)
+        ColorUnion->Colors[i] = ColorIn1->Colors[i];
+    CrntSlot = ColorIn1->ColorCount;
+
+    /*
+     * Potentially obnoxious hack:
+     *
+     * Back CrntSlot down past all contiguous {0, 0, 0} slots at the end
+     * of table 1.  This is very useful if your display is limited to
+     * 16 colors.
+     */
+    while (ColorIn1->Colors[CrntSlot - 1].Red == 0
+           && ColorIn1->Colors[CrntSlot - 1].Green == 0
+           && ColorIn1->Colors[CrntSlot - 1].Blue == 0)
+        CrntSlot--;
+
+    /* Copy ColorIn2 to ColorUnion (use old colors if they exist): */
+    for (i = 0; i < ColorIn2->ColorCount && CrntSlot <= 256; i++) {
+        /* Let's see if this color already exists: */
+        for (j = 0; j < ColorIn1->ColorCount; j++)
+            if (memcmp (&ColorIn1->Colors[j], &ColorIn2->Colors[i],
+                        sizeof(GifColorType)) == 0)
+                break;
+
+        if (j < ColorIn1->ColorCount)
+            ColorTransIn2[i] = j;    /* color exists in Color1 */
+        else {
+            /* Color is new - copy it to a new slot: */
+            ColorUnion->Colors[CrntSlot] = ColorIn2->Colors[i];
+            ColorTransIn2[i] = CrntSlot++;
+        }
+    }
+
+    if (CrntSlot > 256) {
+        GifFreeMapObject(ColorUnion);
+        return ((ColorMapObject *) NULL);
+    }
+
+    NewGifBitSize = GifBitSize(CrntSlot);
+    RoundUpTo = (1 << NewGifBitSize);
+
+    if (RoundUpTo != ColorUnion->ColorCount) {
+        register GifColorType *Map = ColorUnion->Colors;
+
+        /*
+         * Zero out slots up to next power of 2.
+         * We know these slots exist because of the way ColorUnion's
+         * start dimension was computed.
+         */
+        for (j = CrntSlot; j < RoundUpTo; j++)
+            Map[j].Red = Map[j].Green = Map[j].Blue = 0;
+
+        /* perhaps we can shrink the map? */
+        if (RoundUpTo < ColorUnion->ColorCount) {
+            GifColorType *new_map = (GifColorType *)realloc(Map,
+                                 RoundUpTo * sizeof(GifColorType));
+            if( new_map == NULL ) {
+                GifFreeMapObject(ColorUnion);
+                return ((ColorMapObject *) NULL);
+            }
+            ColorUnion->Colors = new_map;
+        }
+    }
+
+    ColorUnion->ColorCount = RoundUpTo;
+    ColorUnion->BitsPerPixel = NewGifBitSize;
+
+    return (ColorUnion);
+
+} /* GifUnionColorMap() */
 //
 // GifMakeMapObject
 //
@@ -577,6 +696,257 @@ gif_nomatch:
     return byteoff; // data size
 } /* EncodeLZW() */
 //
+// EGifSetGifVersion
+//
+void EGifSetGifVersion(GifFileType *GifFile, const bool gif89)
+{
+    // We always use GIF89a
+    (void)GifFile;
+    (void)gif89;
+} /* EGifSetGifVersion() */
+
+//
+// EGifPutExtensionLeader
+//
+int EGifPutExtensionLeader(GifFileType *gif, const int ExtCode)
+{
+    SavedImage *pImage;
+    
+  // put it in the last/current page of the current file
+    if (gif == NULL)
+        return E_GIF_ERR_NOT_WRITEABLE;
+    if (gif->ImageCount > 0) {
+        // put it in a saved image
+        pImage = &gif->SavedImages[gif->ImageCount-1];
+        if (pImage->ExtensionBlockCount == 0) {
+            // allocate some extension block structures
+            pImage->ExtensionBlocks = calloc(1, MAX_EXTENSIONS * sizeof(ExtensionBlock));
+            if (pImage->ExtensionBlocks == NULL)
+                return E_GIF_ERR_NOT_ENOUGH_MEM;
+            pImage->ExtensionBlockCount = 1;
+        }
+        pImage->ExtensionBlocks[pImage->ExtensionBlockCount-1].Function = ExtCode;
+    } else  { // put it in the main image
+        if (gif->ExtensionBlockCount == 0) {
+            // allocate some extension block structures
+            gif->ExtensionBlocks = calloc(1, MAX_EXTENSIONS * sizeof(ExtensionBlock));
+            if (gif->ExtensionBlocks == NULL)
+                return E_GIF_ERR_NOT_ENOUGH_MEM;
+            gif->ExtensionBlockCount = 1;
+        }
+        gif->ExtensionBlocks[gif->ExtensionBlockCount-1].Function = ExtCode;
+    }
+    return GIF_OK;
+} /* EGifPutExtensionLeader() */
+
+//
+// EGifPutExtensionBlock
+//
+int EGifPutExtensionBlock(GifFileType *gif, const int ExtLen, const void *Extension)
+{
+    SavedImage *pImage;
+    
+  // put it in the last/current page of the current file
+    if (gif == NULL)
+        return E_GIF_ERR_NOT_WRITEABLE;
+    if (gif->ImageCount > 0) {
+        // put it in a saved image
+        pImage = &gif->SavedImages[gif->ImageCount-1];
+        if (pImage->ExtensionBlockCount == 0) {
+            // allocate some extension block structures
+            pImage->ExtensionBlocks = calloc(1, MAX_EXTENSIONS * sizeof(ExtensionBlock));
+            if (pImage->ExtensionBlocks == NULL)
+                return E_GIF_ERR_NOT_ENOUGH_MEM;
+            pImage->ExtensionBlockCount = 1;
+        }
+        pImage->ExtensionBlocks[pImage->ExtensionBlockCount-1].ByteCount = ExtLen;
+        pImage->ExtensionBlocks[pImage->ExtensionBlockCount-1].Bytes = malloc(ExtLen);
+        memcpy(pImage->ExtensionBlocks[pImage->ExtensionBlockCount-1].Bytes, Extension, ExtLen);
+    } else  { // put it in the main image
+        if (gif->ExtensionBlockCount == 0) {
+            // allocate some extension block structures
+            gif->ExtensionBlocks = calloc(1, MAX_EXTENSIONS * sizeof(ExtensionBlock));
+            if (gif->ExtensionBlocks == NULL)
+                return E_GIF_ERR_NOT_ENOUGH_MEM;
+            gif->ExtensionBlockCount = 1;
+        }
+        gif->ExtensionBlocks[gif->ExtensionBlockCount-1].ByteCount = ExtLen;
+        gif->ExtensionBlocks[gif->ExtensionBlockCount-1].Bytes = malloc(ExtLen);
+        memcpy(gif->ExtensionBlocks[gif->ExtensionBlockCount-1].Bytes, Extension, ExtLen);
+    }
+    return GIF_OK;}
+//
+// EGifPutExtensionTrailer
+//
+int EGifPutExtensionTrailer(GifFileType *GifFile)
+{
+    (void)GifFile;
+    // no need to do anything here
+    return GIF_OK;
+} /* EGifPutExtensionsTrailer() */
+//
+// EGifPutScreenDesc
+//
+int EGifPutScreenDesc(GifFileType *GifFile,
+                  const int Width,
+                  const int Height,
+                  const int ColorRes,
+                  const int BackGround,
+                  const ColorMapObject *ColorMap)
+{
+    GifFile->SColorMap = NULL;
+
+    if (GifFile->SavedImages != NULL) {
+        /* If already has screen descriptor - something is wrong! */
+        GifFile->Error = E_GIF_ERR_HAS_SCRN_DSCR;
+        return GIF_ERROR;
+    }
+
+    GifFile->SWidth = Width;
+    GifFile->SHeight = Height;
+    GifFile->SColorResolution = ColorRes;
+    GifFile->SBackGroundColor = BackGround;
+    if (ColorMap) {
+        GifFile->SColorMap = GifMakeMapObject(ColorMap->ColorCount,
+                                           ColorMap->Colors);
+        if (GifFile->SColorMap == NULL) {
+            GifFile->Error = E_GIF_ERR_NOT_ENOUGH_MEM;
+            return GIF_ERROR;
+        }
+    } else
+        GifFile->SColorMap = NULL;
+
+    // Mark this file as having a screen descriptor, and no pixel data yet
+    // Allocate memory for the image data
+    GifFile->ImageCount = 0;
+    GifFile->SavedImages = calloc(1, sizeof(SavedImage) * GIF_IMAGE_INCREMENT); // allocate N image structures
+    if (GifFile->SavedImages == NULL) {
+        GifFile->Error = E_GIF_ERR_NOT_ENOUGH_MEM;
+        return GIF_ERROR;
+    }
+    return GIF_OK;
+} /* EGifPutScreenDesc() */
+//
+// EGifPutImageDesc
+//
+// call this before attempting to add image data
+int EGifPutImageDesc(GifFileType *GifFile,
+                 const int Left,
+                 const int Top,
+                 const int Width,
+                 const int Height,
+                 const bool Interlace,
+                 const ColorMapObject *ColorMap)
+{
+    GIFPRIVATE *pPrivate = (GIFPRIVATE *)GifFile->Private;
+
+    if (pPrivate->iPixelCount != -1) {
+        /* If already has active image descriptor - something is wrong! */
+        GifFile->Error = E_GIF_ERR_HAS_IMAG_DSCR;
+        return GIF_ERROR;
+    }
+    GifFile->Image.Left = Left;
+    GifFile->Image.Top = Top;
+    GifFile->Image.Width = Width;
+    GifFile->Image.Height = Height;
+    GifFile->Image.Interlace = Interlace;
+    if (ColorMap != GifFile->Image.ColorMap) {
+        if (ColorMap) {
+            if (GifFile->Image.ColorMap != NULL) {
+            GifFreeMapObject(GifFile->Image.ColorMap);
+            GifFile->Image.ColorMap = NULL;
+            }
+            GifFile->Image.ColorMap = GifMakeMapObject(ColorMap->ColorCount,
+                                ColorMap->Colors);
+            if (GifFile->Image.ColorMap == NULL) {
+            GifFile->Error = E_GIF_ERR_NOT_ENOUGH_MEM;
+            return GIF_ERROR;
+            }
+        } else {
+            GifFile->Image.ColorMap = NULL;
+        }
+    }
+
+    if (GifFile->SColorMap == NULL && GifFile->Image.ColorMap == NULL) {
+        GifFile->Error = E_GIF_ERR_NO_COLOR_MAP;
+        return GIF_ERROR;
+    }
+
+    GifFile->ImageCount = 1;
+    GifFile->SavedImages[0].ImageDesc.Top = Top;
+    GifFile->SavedImages[0].ImageDesc.Left = Left;
+    GifFile->SavedImages[0].ImageDesc.Width = Width;
+    GifFile->SavedImages[0].ImageDesc.Height = Height;
+    GifFile->SavedImages[0].RasterBits = malloc(Width * Height);
+    if (GifFile->SavedImages[0].RasterBits == NULL) {
+        GifFile->Error = E_GIF_ERR_NOT_ENOUGH_MEM;
+        return GIF_ERROR;
+    }
+    if (GifFile->Image.ColorMap)
+        pPrivate->iBitsPerPixel = GifFile->Image.ColorMap->BitsPerPixel;
+    else if (GifFile->SColorMap)
+        pPrivate->iBitsPerPixel = GifFile->SColorMap->BitsPerPixel;
+
+    printf("allocated rasterbits, cx =%d, cy = %d\n", Width, Height);
+    /* Mark this file as being ready to receive pixel data */
+    pPrivate->iPixelCount = Width * Height;
+
+    return GIF_OK;
+} /* EGifPutImageDesc() */
+
+//
+// EGifPutLine
+//
+int EGifPutLine(GifFileType *gif, GifPixelType *pLine,
+                int LineLen)
+{
+    GIFPRIVATE *pPrivate;
+    int i;
+    uint8_t *d, ucMask;
+    SavedImage *pSI;
+    
+    if (gif == NULL || pLine == NULL || LineLen < 0) {
+        gif->Error = E_GIF_ERR_NOT_WRITEABLE;
+        return GIF_ERROR;
+    }
+    pPrivate = (GIFPRIVATE *)gif->Private;
+    if (pPrivate->iPixelCount < LineLen) {
+        gif->Error = E_GIF_ERR_DATA_TOO_BIG;
+        return GIF_ERROR;
+    }
+
+    if (!LineLen)
+        LineLen = gif->Image.Width;
+    if (pPrivate->iPixelCount < (unsigned)LineLen) {
+        gif->Error = E_GIF_ERR_DATA_TOO_BIG;
+        return GIF_ERROR;
+    }
+    // Make sure the codes are not out of bit range, as we might generate
+    // wrong code (because of overflow when we combine them) in this case
+    ucMask = (1 << pPrivate->iBitsPerPixel) - 1;
+    pSI = &gif->SavedImages[gif->ImageCount-1];
+    d = pSI->RasterBits;
+    i = (pSI->ImageDesc.Width * pSI->ImageDesc.Height) - pPrivate->iPixelCount; // current output pointer
+    printf("image writing offset = %d\n", i);
+    d += i;
+    for (i = 0; i < LineLen; i++)
+        *d++ = (pLine[i] &= ucMask);
+
+    pPrivate->iPixelCount -= LineLen;
+    if (pPrivate->iPixelCount == 0) { // image finished!
+        // Need to hack things a bit to not free the outer gif
+        // structure here because the old API freed it explicitly
+        GifFileType *pTempGif = malloc(sizeof(GifFileType));
+        int err;
+        memcpy(pTempGif, gif, sizeof(GifFileType));
+        err = EGifSpew(pTempGif);
+        memset(gif, 0, sizeof(GifFileType)); // clear all pointers
+        return err;
+    }
+    return GIF_OK;
+} /* EGifPutLine() */
+
+//
 // EGifOpenFileName
 //
 GifFileType *EGifOpenFileName(const char *fname, const bool TestExistence, int *pError)
@@ -621,6 +991,7 @@ GifFileType *EGifOpenFileHandle(const int FileHandle, int *pError)
         *pError = E_GIF_ERR_NOT_ENOUGH_MEM;
         return NULL;
     }
+    pPrivate->iPixelCount = -1;
     pPrivate->pSymbols = malloc(3 * 4096 * sizeof(uint32_t));
     if (pPrivate->pSymbols == NULL) {
         free(gif);
@@ -675,6 +1046,14 @@ int EGifCloseFile(GifFileType *gif, int *ErrorCode)
     if (gif->SColorMap) {
         GifFreeMapObject(gif->SColorMap);
         gif->SColorMap = NULL;
+    }
+    if (gif->ImageCount && gif->SavedImages != NULL) {
+        // free any saved images
+        while (gif->ImageCount) {
+            FreeLastSavedImage(gif);
+        }
+        free(gif->SavedImages);
+        gif->SavedImages = NULL;
     }
     free(gif);
     return err;

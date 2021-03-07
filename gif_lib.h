@@ -31,6 +31,7 @@ extern "C" {
 
 #include <stddef.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #define INTELSHORT(p) ((*p) + (*(p+1)<<8))
 #if (INTPTR_MAX == INT64_MAX)
@@ -54,6 +55,10 @@ extern "C" {
 #define MAX_CODE_LEN 12
 #define MAX_HASH 5003
 #define MAXMAXCODE 4096
+
+#ifndef MAX
+#define MAX(a, b) (a > b) ? a : b
+#endif
 
 #define GIF_STAMP "GIFVER"          /* First chars in file - GIF stamp.  */
 #define GIF_STAMP_LEN sizeof(GIF_STAMP) - 1
@@ -156,6 +161,8 @@ typedef struct GraphicsControlBlock {
 #define NO_TRANSPARENT_COLOR    -1
 } GraphicsControlBlock;
 
+extern const char *GifErrorString(int ErrorCode);
+
 // Decoder
 GifFileType *DGifOpenFileName(const char *GifFileName, int *Error);
 GifFileType *DGifOpenFileHandle(int GifFileHandle, int *Error);
@@ -170,9 +177,20 @@ GifFileType *EGifOpen(void *userPtr, OutputFunc writeFunc, int *Error);
 int EGifSpew(GifFileType * GifFile);
 const char *EGifGetGifVersion(GifFileType *GifFile); /* new in 5.x */
 int EGifCloseFile(GifFileType *GifFile, int *ErrorCode);
-
+void EGifSetGifVersion(GifFileType *GifFile, const bool gif89);
+int EGifPutExtensionBlock(GifFileType *GifFile, const int ExtLen, const void *Extension);
+int EGifPutExtensionTrailer(GifFileType *GifFile);
+int EGifPutExtensionLeader(GifFileType *GifFile, const int ExtCode);
+int EGifPutExtension(GifFileType *GifFile, const int ExtCode, const int ExtLen, const void *Extension);
+int EGifPutScreenDesc(GifFileType *GifFile, const int Width, const int Height, const int ColorRes, const int BackGround, const ColorMapObject *ColorMap);
+int EGifPutImageDesc(GifFileType *GifFile, const int Left, const int Top, const int Width, const int Height, const bool Interlace, const ColorMapObject *ColorMap);
+int EGifPutLine(GifFileType *GifFile, GifPixelType *GifLine,
+                int GifLineLen);
 // Common
 ColorMapObject *GifMakeMapObject(int ColorCount, const GifColorType *ColorMap);
+ColorMapObject *GifUnionColorMap(const ColorMapObject *ColorIn1,
+                                     const ColorMapObject *ColorIn2,
+                                     GifPixelType ColorTransIn2[]);
 void GifFreeMapObject(ColorMapObject *Object);
 SavedImage *GifMakeSavedImage(GifFileType *GifFile,
                                   const SavedImage *CopyFrom);
@@ -226,6 +244,8 @@ typedef struct gif_private
     uint32_t *pSymbols; // temp memory for encode/decode
     int iHandle; // file handle
     int iFileSize;
+    int iBitsPerPixel;
+    int iPixelCount; // pixels remaining in current image being written
     unsigned char *pFileData;
 } GIFPRIVATE;
 
