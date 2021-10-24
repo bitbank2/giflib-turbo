@@ -24,6 +24,7 @@
 #include <stdarg.h>
 
 #include <sys/fcntl.h>
+#include <sys/stat.h>
 
 #include "gif_lib.h"
 
