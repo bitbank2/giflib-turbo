@@ -186,6 +186,8 @@ int EGifPutScreenDesc(GifFileType *GifFile, const int Width, const int Height, c
 int EGifPutImageDesc(GifFileType *GifFile, const int Left, const int Top, const int Width, const int Height, const bool Interlace, const ColorMapObject *ColorMap);
 int EGifPutLine(GifFileType *GifFile, GifPixelType *GifLine,
                 int GifLineLen);
+int EGifPutPixel(GifFileType *GifFile, GifPixelType Pixel);
+
 // Common
 ColorMapObject *GifMakeMapObject(int ColorCount, const GifColorType *ColorMap);
 ColorMapObject *GifUnionColorMap(const ColorMapObject *ColorIn1,

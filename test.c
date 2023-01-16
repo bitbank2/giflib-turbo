@@ -19,8 +19,9 @@ void DoGifWedge(char *outname)
         ImageWidth = DEFAULT_WIDTH,
         ImageHeight = DEFAULT_HEIGHT;
 
-    int    i, j, l, c, LevelStep, LogNumLevels, ErrorCode, Count = 0;
-    bool Error, LevelsFlag = false, SizeFlag = false, HelpFlag = false;
+    int    i, j, l, c, LevelStep, LogNumLevels, ErrorCode;
+// int Count = 0;
+  //  bool Error, LevelsFlag = false, SizeFlag = false, HelpFlag = false;
     GifRowType Line;
     ColorMapObject *ColorMap;
     GifFileType *GifFile;

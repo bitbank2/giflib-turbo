@@ -285,7 +285,7 @@ int EGifSpew(GifFileType * gif)
         write(pPrivate->iHandle, pChunked, iLen);
         iLen = 0;
     } // for each frame
-gif_create_exit:
+
     write(pPrivate->iHandle, ";", 1); // finish the file here
     close(pPrivate->iHandle);
     if (pLZW) free(pLZW);
@@ -946,6 +946,19 @@ int EGifPutLine(GifFileType *gif, GifPixelType *pLine,
     }
     return GIF_OK;
 } /* EGifPutLine() */
+
+//
+// EGifPutPixel
+//
+// very inefficient way to generate an image
+// use EGifPutLine or the newer API
+//
+int EGifPutPixel(GifFileType *GifFile, GifPixelType Pixel)
+{
+    GifPixelType buf[4];
+    buf[0] = Pixel;
+    return EGifPutLine(GifFile, buf, 1);
+} /* EGifPutPixel() */
 
 //
 // EGifOpenFileName
