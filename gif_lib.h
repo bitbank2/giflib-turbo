@@ -49,6 +49,13 @@ extern "C" {
 #define BIGUINT uint32_t
 #endif
 
+#ifndef S_IREAD
+#define S_IREAD S_IRUSR
+#endif
+#ifndef S_IWRITE
+#define S_IWRITE S_IWUSR
+#endif
+
 #define SYM_OFFSETS 0x0000
 #define SYM_LENGTHS 0x1000
 #define SYM_EXTRAS  0x2000
